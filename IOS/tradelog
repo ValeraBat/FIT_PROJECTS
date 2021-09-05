@@ -1,0 +1,278 @@
+#!/bin/sh
+
+export POSIXLY_CORRECT="yes"
+export LC_NUMERIC="en_US.UTF-8"
+export LC_ALL="C"
+
+
+pr_h()
+{
+   echo "Analyzátor logů z obchodování na burze."
+   echo
+   echo "Použití: tradelog [-h|--help] [FILTR] [PŘÍKAZ] [LOG [LOG2 [...]]"
+   echo
+   echo " Filtry:"
+   echo "  -a DATETIME                after: jsou uvažovány pouze záznamy PO tomto datu (bez tohoto data)"
+   echo "                             DATETIME je formátu YYYY-MM-DD HH:MM:SS"
+   echo
+   echo "  -b DATETIME                before: jsou uvažovány pouze záznamy PŘED tímto datem (bez tohoto data)"
+   echo
+   echo "  -t TICKER                  Jsou uvažovány pouze záznamy odpovídající danému tickeru"
+   echo "                             Při více výskytech přepínače se bere množina všech uvedených tickerů"
+   echo
+   echo "  -w WIDTH                   U výpisu grafů nastavuje jejich šířku, tedy délku nejdelšího řádku na WIDTH"
+   echo "                             Tedy, WIDTH musí být kladné celé číslo"
+   echo "                             Více výskytů přepínače je chybné spuštění"
+   echo
+   echo " Příkazy:"
+   echo "  list-tick                  výpis seznamu vyskytujících se burzovních symbolů tzv. tickerů"
+   echo
+   echo "  profit                     výpis celkového zisku z uzavřených pozic"
+   echo
+   echo "  pos                        výpis hodnot aktuálně držených pozic seřazených sestupně dle hodnoty (NEFUNKČNÍ)"
+   echo
+   echo "  last-price                 výpis poslední známé ceny pro každý ticker"
+   echo
+   echo "  hist-ord                   výpis histogramu počtu transakcí dle tickeru"
+   echo
+   echo "  graph-pos                  výpis grafu hodnot držených pozic dle tickeru (NEFUNKČNÍ)"
+   echo
+   echo "  -h, --help                 vypíšou nápovědu s krátkým popisem každého příkazu a přepínače"
+   echo
+   echo
+   echo " ################################"
+   echo " Udělal Valerii Batykov, xbatyk00"
+   echo " ################################"
+
+   exit 0
+}
+
+
+pr_err()
+{
+  case "$ERR_C" in
+    1)
+      echo "Chyba - Špatné argumenty"
+      ;;
+    2)
+      echo "Chyba - Příliš mnoho příkazů"
+      ;;
+  esac
+  exit 1
+}
+
+
+ERR_C=0
+SHIFT="1"
+T_BEFORE="9999-99-99 99:99:99"
+
+#nacitani prikazu z prikazove radky
+while [ $# -gt 0 ]
+do
+    case "$1" in
+
+        -h | --help)
+            pr_h
+            ;;
+          
+          
+
+        list-tick | profit | pos | last-price | hist-ord | graph-pos)
+            if [ -n "$Command" ]
+              then
+                  ERR_C=2
+                  pr_err
+            else
+                Command="$1"
+            fi
+            ;;
+
+
+
+
+        -a)
+            if [ -n "$2" ]
+              then T_AFTER="$2"
+              SHIFT="2"
+            fi
+            ;;
+        -b)
+            if [ -n "$2" ]
+              then T_BEFORE="$2"
+              SHIFT="2"
+            fi
+            ;;
+        -t)
+            if [ -n "$2" ]
+              then TICK="$2 $TICK"
+              SHIFT="2"
+            fi
+            ;;
+        -w)
+            if [ -n "$2" ]
+              then WIDTH="$2"
+              SHIFT="2"
+            fi
+            ;;
+
+
+
+        *.log)
+            FILE_LG="$1 $FILE_LG"
+            ;;
+        *.gz)
+            FILE_GZ="$1 $FILE_GZ"
+            ;;
+          
+        *)
+            ERR_C=1
+            pr_err
+            ;;
+
+
+    esac
+
+    if [ "$SHIFT" = "1" ]
+      then shift
+    else shift
+         shift
+         SHIFT="1"
+    fi
+done
+
+
+#filtry
+if [ -n "$FILE_LG" ]
+    then FILE="cat $FILE_LG"
+elif [ -n "$FILE_GZ" ]
+    then FILE="gunzip -c $FILE_GZ | cat $FILE_LG -"
+else
+    FILE="cat -"
+fi
+
+
+FILTERS=" \awk \
+-F ';' \-v time1=\"$T_AFTER\" \-v time2=\"$T_BEFORE\" \-v tick=\"$TICK\" \ ' \
+BEGIN \
+{ \
+    split(tick, tick_arr, \" \"); \
+    for (i in tick_arr) \
+    tick_arr[tick_arr[i]]=\"\"
+  \
+} \
+{ \
+    if (\$1 > time1 && \$1 < time2 && (\$2 in tick_arr || tick == \"\")) \
+        print \$0; \
+} \ ' \
+| sort -u \
+"
+
+#prikazy
+LIST_TICK=" \awk \
+-F ';' \ ' \
+{ \
+    tick_arr[\$2] = \"\"; \
+} \
+END \
+{ \
+    for (i in tick_arr) \
+        printf \"%s\n\", i; \
+} \ ' \
+| sort -u \
+"
+
+HIST_ORD=" \awk \
+-F ';' \-v width=\"$WIDTH\" \ ' \
+{ \
+    tick_arr[\$2]++; \
+    if (tick_arr[\$2] > max) \
+        max=tick_arr[\$2]; \
+} \
+END \
+{ \
+    for (i in tick_arr) \
+    { \
+        lim=tick_arr[i]; \
+        if (width != \"\") \
+            lim=int(tick_arr[i]*width/max); \
+        hist=\"\"; \
+        for (j=0;j<lim;j++) \
+            hist=hist \"#\"; \
+        printf \"%-10s: %s\n\", i, hist; \
+    } \
+} \ ' \
+| sort -u \
+"
+
+LAST_PRICE=" \awk \
+-F ';' \ ' \
+{ \
+    tick_arr[\$2]=\$4; \
+} \
+END \
+{ \
+    for (i in tick_arr) \
+    { \
+        a=sprintf(\"%.2f\",tick_arr[i]); \
+        a2=length(a); \
+        if (price_length > max) \
+            max=price_length; \
+    } \
+    for (i in tick_arr) \
+        printf \"%-10s: %*.2f\n\", i, max, tick_arr[i]; \
+} \ ' \
+| sort -u \
+"
+
+PROFIT=" \awk \
+-F ';' \ ' \
+{ \
+    if (\$3 == \"sell\") \
+        sell+=\$4*\$6; \
+    else \
+        buy+=\$4*\$6; \
+} \
+END \
+{ \
+    prof=sell-buy; \
+    printf \"%.2f\n\", prof; \
+} \ ' \
+"
+
+
+
+
+#GRAPH_POS=" \
+#awk \
+#-F ';' \
+#-v width=\"$WIDTH\" \
+
+
+if    [ "$Command" = "list-tick" ]
+  then OUTPUT="$LIST_TICK"
+
+elif  [ "$Command" = "profit" ]
+  then OUTPUT="$PROFIT"
+
+#elif  [ "$Command" = "pos" ]
+# then OUTPUT="$POS"
+
+elif  [ "$Command" = "last-price" ]
+  then OUTPUT="$LAST_PRICE"
+
+elif  [ "$Command" = "hist-ord" ]
+  then OUTPUT="$HIST_ORD"
+
+#elif  [ "$Command" = "graph-pos" ]
+# then OUTPUT="$GRAPH_POS"
+
+fi
+
+if [ -n "$Command" ]
+  then
+    eval "$FILE | $FILTERS | $OUTPUT"
+else
+    eval "$FILE | $FILTERS"
+fi
+
+
