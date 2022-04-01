@@ -10,7 +10,7 @@ My university projects.
 
 #### IOS
 1. Project ../15
-2. Project 15/1
+2. Project 15/15
 
 #### IPK
 1. Project 18/20 (2 points minus due to documentation ://////////////)
