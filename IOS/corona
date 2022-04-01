@@ -1,0 +1,685 @@
+#!/bin/bash
+
+export POSIXLY_CORRECT="yes"
+export LC_NUMERIC="en_US.UTF-8"
+export LC_ALL="C"
+
+print_help()
+{
+   echo 'Použití: corona [-h] [FILTERS] [COMMAND] [LOG [LOG2 [...]]
+   
+FILTERS může být kombinace následujících (každý maximálně jednou):
+   
+-a DATETIME — after: jsou uvažovány pouze záznamy PO tomto datu (včetně tohoto data). DATETIME je formátu YYYY-MM-DD.
+-b DATETIME — before: jsou uvažovány pouze záznamy PŘED tímto datem (včetně tohoto data).
+-g GENDER — jsou uvažovány pouze záznamy nakažených osob daného pohlaví. GENDER může být M (muži) nebo Z (ženy).
+-s [WIDTH] u příkazů gender, age, daily, monthly, yearly, countries, districts a regions vypisuje data ne číselně, ale graficky v podobě histogramů.
+   
+COMMAND může být jeden z:
+   
+infected — spočítá počet nakažených.
+merge — sloučí několik souborů se záznamy do jednoho, zachovávající původní pořadí (hlavička bude ve výstupu jen jednou).
+gender — vypíše počet nakažených pro jednotlivá pohlaví.
+age — vypíše statistiku počtu nakažených osob dle věku
+daily — vypíše statistiku nakažených osob pro jednotlivé dny.
+monthly — vypíše statistiku nakažených osob pro jednotlivé měsíce.
+yearly — vypíše statistiku nakažených osob pro jednotlivé roky.
+countries — vypíše statistiku nakažených osob pro jednotlivé země nákazy (bez ČR, tj. kódu CZ).
+districts — vypíše statistiku nakažených osob pro jednotlivé okresy.
+regions — vypíše statistiku nakažených osob pro jednotlivé kraje.
+   
+-h — vypíše nápovědu s krátkým popisem každého příkazu a přepínače.'
+   exit 0
+}
+
+print_error()
+{
+  case "$ERR_CODE" in
+    1)
+      echo "$ERR_PREFIX Wrong arguments"
+      ;;
+    2)
+      echo "$ERR_PREFIX Too many commands"
+      ;;
+    3)
+      echo "$ERR_PREFIX Wrong gender"
+      ;;
+  esac
+  exit 1
+}
+
+# Variables
+ERR_PREFIX="ERROR:"
+ERR_CODE=0
+SHIFT="single"
+LINE_SEPARATOR=","
+DATETIME_BEFORE="9999-99-99"
+GENDER_F=""
+WIDTH=0;
+WIDTH_ENABLE=0;
+while [ $# -ne 0 ]
+do
+    case "$1" in
+        # read filters
+        -a)
+            if [ -n "$COMMAND" ]
+            then
+                ERR_CODE=1
+                print_error
+            else
+                if [ -n "$2" ]; then DATETIME_AFTER="$2"; SHIFT="double";fi;
+            fi
+            ;;
+        -b)
+            if [ -n "$COMMAND" ]
+            then
+                ERR_CODE=1
+                print_error
+            else
+            if [ -n "$2" ]; then DATETIME_BEFORE="$2"; SHIFT="double";fi;
+            fi
+            ;;
+        -g)
+            if [ -n "$COMMAND" ]
+            then
+                ERR_CODE=1
+                print_error
+            else
+            if [ -n "$2" ]; then GENDER_F="$2"; SHIFT="double"; fi;
+            fi;
+            ;;
+        -s)
+            WIDTH_ENABLE=1;
+            if [ -n "$COMMAND" ]
+            then
+                ERR_CODE=1
+                print_error
+            else
+            if (echo "$2" | grep -E -q "^-?[0-9]+$");
+            then
+                WIDTH="$2"; SHIFT="double"; fi;
+            fi
+            ;;
+
+        # read command
+        infected | merge | gender | age | daily | monthly | yearly | countries | districts | regions)
+            if [ -n "$COMMAND" ]
+            then
+                ERR_CODE=2
+                print_error
+            else
+                COMMAND="$1"
+            fi
+            ;;
+
+        # read help
+        -h)
+            print_help
+            ;;
+
+        # read logs
+        *.gz)
+            GZ_FILES="$1 $GZ_FILES"
+            ;;
+        *.csv)
+            CSV_FILES="$1 $CSV_FILES"
+            ;;
+        *.bz2)
+            BZ2_FILES="$1 $BZ2_FILES"
+            ;;
+
+        # unknown input
+        *)
+            ERR_CODE=1
+            print_error
+            ;;
+    esac
+
+    if [ "$SHIFT" = "single" ]; then shift; else shift; shift; SHIFT="single"; fi
+done
+
+# read files
+if [ -n "$GZ_FILES" ]
+then
+    INPUT="gunzip -c $GZ_FILES | cat $CSV_FILES -";
+elif [ -n "$CSV_FILES" ]
+then
+    INPUT="cat $CSV_FILES";
+else
+    INPUT="cat -"
+fi
+
+FILTERS=" \
+awk \
+-F , \
+-v date_a=\"$DATETIME_AFTER\" \
+-v date_b=\"$DATETIME_BEFORE\" \
+-v gender=\"$GENDER_F\" \
+' \
+BEGIN \
+{ \
+    if (gender == \"\") { \
+        gender_arr[\"M\"] = \"\"; \
+        gender_arr[\"Z\"] = \"\"; \
+    } else { \
+        gender_arr[gender] = \"\"; \
+    } \
+} \
+{ \
+    if(NR == 1)
+        print;
+    if (\$2 >= date_a && \$2 <= date_b && \$4 in gender_arr) { \
+        print; \
+    } \  
+} \
+' \
+"
+
+HISTOGRAM="awk \
+-F : \
+-v width=\"$WIDTH\" \
+-v command=\"$COMMAND\" \
+-v width_en=\"$WIDTH_ENABLE\" \
+'
+BEGIN \
+{ \
+    if (command == \"gender\" || command == \"yearly\") \
+        divider = 100000; \
+    else if (command == \"age\" || command == \"monthly\" || command == \"regions\") \
+        divider = 10000; \
+    else if (command == \"daily\") \
+        divider = 500; \
+    else if (command == \"countries\") \ 
+        divider = 100; \
+    else if (command == \"districts\") \
+        divider = 1000; \
+} \
+{ \
+    if(width_en == 0)
+        print;
+    else
+    {
+        gsub(/ /, \"\", \$2); \
+        counter = int(\$2 / divider); \
+        printf \"%s: \",\$1,counter;
+        for(i=0;i < counter ; i++)
+            printf \"#\";
+        printf \"\n\";
+    }
+}
+' \
+"
+
+INFECTED="awk -F , '{counter++} END {print counter - 1}'"
+
+MERGE="awk -F , \
+' \
+{ \
+    if (\$2 != \"datum\" && NR > 1)
+        print;
+    else if (NR == 1)
+        print;
+} \
+' \
+"
+
+GENDER_COM="awk -F , \
+' \
+{ \
+    if("\$4" == \"M\") \
+        counter_m++; \
+    if("\$4" == \"Z\") \
+        counter_z++; \
+    if("\$4" == \"\")
+        none_counter++;
+} \
+END \
+{ \
+    printf \"M: %d \n\", counter_m; \
+    printf \"Z: %d \n\", counter_z; \
+    if(none_couter != 0)
+        printf \"None: %d \n\", none_counter; \ 
+} \
+'
+"
+
+AGE="awk -F , '{if(NR > 1) print \$3}' | sort -n |
+awk \
+' \
+{
+    if ("\$0" != \"\")
+    {
+        age_array[i] = "\$0"; \
+        i++; \
+    }
+    else
+    {
+        none_counter++;
+    }
+} \
+END \
+{
+    j = 0;
+    more = 0;
+    less = 5;
+    for(n = 0; n<12; n++)
+    {
+        if(n == 0)
+            space = \"   \";    
+        else if(n == 1 || n == 11)
+            space = \"  \";
+        else if(n == 10)
+            space = \"\";
+        else
+            space = \" \";
+        if(n < 11)
+        {
+            for(;age_array[j] >= more && age_array[j] <= less;j++)
+                counter++;
+            printf \"%d-%d%s: %d\n\",more,less,space,counter;
+        }
+        else if(n == 11)
+        {
+            for(;age_array[j] > more-1;j++)
+                counter++;
+            printf \">%d%s: %d\n\",more-1,space,counter;
+        } \
+        
+        more = less+1;
+        less += 10;
+        counter = 0;
+    } \
+    if (none_counter != 0) \
+    { \
+        printf \"None  : %d \n\", none_counter; \ 
+    } \
+} \
+' \
+"
+
+DAILY="awk -F , '{print \$2}' | sort | \
+awk \
+' \
+{ \
+    if(\$0 != \"\")
+    {
+        datum_array[i] = \$0;
+        i++;
+    }
+    else
+        none_counter++;
+} \
+END \
+{ \
+    n = 0; \
+    for (j = 0; j < i - 1 ; j++) \
+        if(datum_array[j+1] != datum_array [j]) \
+            not_eq_days++; \
+    for (j = 0; j < not_eq_days ; j++) \
+    { \ 
+        for(; datum_array[n+1] == datum_array[n]; n++) \
+        { \
+            days_counter++; \
+        } \
+        days_counter++; \
+        if(j > 1) \
+            printf \"%s: %d\n\",datum_array[n],days_counter; \
+        if(j == 1)
+            printf \"%s: %d\n\",datum_array[n],days_counter+1;\
+        days_counter = 0; \
+        n++; \
+    } \
+    if(none_couter != 0)
+        printf \"None: %d \n\", none_counter; \ 
+} \
+' \
+" 
+
+MONTHLY="awk -F , '{print \$2}' | sort | \
+awk \
+' \
+{ \
+    if(\$0 != \"\")
+    {
+        datum_array[i] = \$0;
+        monthly_array[i] = substr(datum_array[i],0,7);
+        i++;
+    }
+    else
+        none_counter++;
+} \
+END \
+{ \
+    n = 0; \
+    for (j = 0; j < i - 1 ; j++) \
+        if(monthly_array[j+1] != monthly_array [j]) \
+            not_eq_month++; \
+    for (j = 0; j < not_eq_month ; j++) \
+    { \ 
+        for(; monthly_array[n+1] == monthly_array[n]; n++) \
+        { \
+            month_counter++; \
+        } \
+        month_counter++; \
+        if(j > 1) \
+            printf \"%s: %d\n\",monthly_array[n],month_counter; \
+        if(j == 1)
+            printf \"%s: %d\n\",monthly_array[n],month_counter+1;\
+        month_counter = 0; \
+        n++; \
+    } \
+    if(none_couter != 0)
+        printf \"None: %d \n\", none_counter; \ 
+} \
+' \
+" 
+
+YEARLY="awk -F , '{print \$2}' | sort | \
+awk \
+' \
+{ \
+    if(\$0 != \"\")
+    {
+        datum_array[i] = \$0;
+        yearly_array[i] = substr(datum_array[i],0,4);
+        i++;
+    }
+    else
+        none_counter++;
+} \
+END \
+{ \
+    n = 0; \
+    for (j = 0; j < i - 1 ; j++) \
+        if(yearly_array[j+1] != yearly_array [j]) \
+            not_eq_years++; \
+    for (j = 0; j < not_eq_years ; j++) \
+    { \ 
+        for(; yearly_array[n+1] == yearly_array[n]; n++) \
+        { \
+            count_year++; \
+        } \
+        count_year++; \
+        if(j > 1) \
+            printf \"%s: %d\n\",yearly_array[n],count_year; \
+        if(j == 1)
+            printf \"%s: %d\n\",yearly_array[n],count_year+1; \
+        count_year = 0; \
+        n++; \
+    } \
+    if(none_couter != 0)
+        printf \"None: %d \n\", none_counter; \ 
+} \
+' \
+" 
+
+DISTRICTS="awk -F , '{print \$6}' | sort | \
+awk \
+' \
+{ \
+    if(\$0 != \"\")
+    {
+        districts_array[i] = \$0; \
+        i++; \
+    }
+    else
+        none_counter++;
+} \
+END \
+{ \
+    for(j = 0; j < i - 1; j++) \
+    { \
+        if (districts_array[j]!=districts_array[j+1]) \
+        { \
+            c_array[not_eq_districts] = districts_array[j]; \
+            not_eq_districts++; \
+        } \
+    } \
+    n = 1;
+    for(j = 1; j < not_eq_districts ; j++) \
+    {
+        for(;n < i; n++) \
+        { \
+            if (districts_array[n] == c_array[j])
+                count_districts++; \
+            else 
+                break;
+        } \
+        if (j == 1)
+            printf \"%s: %d\n\",c_array[j],count_districts+1;
+        else 
+            printf \"%s: %d\n\",c_array[j],count_districts;
+        count_districts = 0;
+    }
+    if(none_counter != 0)
+        printf \"None: %d \n\", none_counter; \ 
+} \
+' \
+" 
+
+REGIONS="awk -F , '{print \$5}' | sort | \
+awk \
+' \
+{ \
+    if(\$0 != \"\")
+    {
+        regions_array[i] = \$0; \
+        i++; \
+    }
+    else
+        none_counter++;
+} \
+END \
+{ \
+    for(j = 0; j < i - 1; j++) \
+    { \
+        if (regions_array[j]!=regions_array[j+1]) \
+        { \
+            c_array[not_eq_regions] = regions_array[j]; \
+            not_eq_regions++; \
+        } \
+    } \
+    n = 1;
+    for(j = 1; j < not_eq_regions ; j++) \
+    {
+        for(;n < i; n++) \
+        { \
+            if (regions_array[n] == c_array[j])
+                count_regions++; \
+            else 
+                break;
+        } \
+        if (j == 1)
+            printf \"%s: %d\n\",c_array[j],count_regions+1;
+        else 
+            printf \"%s: %d\n\",c_array[j],count_regions;
+        count_regions = 0;
+    }
+    if(none_counter != 0)
+        printf \"None: %d \n\", none_counter; \ 
+} \
+' \
+" 
+
+COUNTRIES="awk -F , '{if(\$8 != \"\") print \$8}' | sort | \
+awk \
+' \
+{ \
+    countries_array[i] = \$0; \
+    i++; \
+} \
+END \
+{ \
+    for(j = 0; j < i - 1; j++) \
+    { \
+        if (countries_array[j]!=countries_array[j+1]) \
+        { \
+            c_array[not_eq_countries] = countries_array[j]; \
+            not_eq_countries++; \
+        } \
+    } \
+    n = 0;
+    for(j = 0; j < not_eq_countries ; j++) \
+    {
+        for(;n < i; n++) \
+        { \
+            if (countries_array[n] == c_array[j])
+                count_countries++; \
+            else 
+                break;
+        } \
+        printf \"%s: %d\n\",c_array[j],count_countries;
+        count_countries = 0;
+    }
+} \
+' \
+" 
+
+INVALID_DATE_OUTPUT=" awk -F , \
+' \
+{ \ 
+    gsub(/ /, \"\");
+    gsub(/\t/, \"\");
+    if (NR>1 && \$2 != \"\")
+    {
+        if(!(\$2 ~ /[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]/))
+            printf \"Invalid date: %s\n\", \$0;
+        else
+        {
+            n = split(\$2,control_array,\"-\");
+
+            if(!(control_array[2] >= \"01\"  && control_array[2] <= \"12\") || \
+               !(control_array[1] >= \"0000\" && control_array[1] <= \"9999\") || \
+               !(control_array[3] >= \"01\" && control_array[3] <= \"31\")) \
+                printf \"Invalid date: %s\n\", \$0;
+            else
+                if ((control_array[2] == \"04\" || control_array[2] == \"06\" || \
+                     control_array[2] == \"09\" || control_array[2] == \"11\") && \
+                    !(control_array[3] >= \"01\" && control_array[3] <= \"30\")) \
+                    printf \"Invalid date: %s\n\", \$0;
+                else if(control_array[2] == \"02\") \
+                { \
+                    if (control_array[1] == \"2020\" && !(control_array[3] >= \"01\"  && control_array[3] <= \"29\")) \
+                    { \
+                        printf \"Invalid date: %s\n\", \$0; \
+                    } \
+                    else if(!(control_array[3] >= \"01\"  && control_array[3] <= \"28\")) \
+                    { \
+                        printf \"Invalid date: %s\n\", \$0;
+                    } \
+                } \
+        }
+
+        
+
+        
+            
+
+        if (!(\$3 >= 0 && \$3 <= 200) && \$3 != \"\" || split(\$3,control_array,\".\") > 1)
+            printf \"Invalid age: %s\n\", \$0;
+    }
+} \ 
+'
+"
+
+INVALID_DATE_OUTPUT2=" awk -F , \
+' \
+{ \ 
+    gsub(/ /, \"\");
+    gsub(/\t/, \"\");
+    if (NR>1)
+    {
+        n = split(\$2,control_array,\"-\");
+
+        if (n != 3 && \$2 != \"\" || !(control_array[1] > \"0000\" && control_array[1] < \"9999\") || \
+        !(control_array[2] >= \"01\" && control_array[2] <= \"12\") || \
+        (!(control_array[3] >= \"01\"  && control_array[3] <= \"31\") || \
+        ((control_array[2] == \"04\" || control_array[2] == \"06\" || control_array[2] == \"09\" || control_array[2] == \"11\") && \
+        !(control_array[3] >= \"01\"  && control_array[3] <= \"30\")) || \
+        (control_array[2] == \"02\" && !(control_array[3] >= \"01\"  && control_array[3] <= \"29\"))))
+            printf \"Invalid date: %s\n\", \$0;
+
+        if (!(\$3 >= 0 && \$3 <= 200) && \$3 != \"\" || split(\$3,control_array,\".\") > 1)
+            printf \"Invalid age: %s\n\", \$0;
+    }
+} \ 
+'
+"
+
+
+
+
+INVALID_DATE="awk -F , \
+' \
+{ \ 
+    if (NR == 1)
+        print;
+    else
+    {
+        gsub(/ /, \"\");
+        gsub(/\t/, \"\");
+
+
+
+        if (\$2 ~ /[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]/ && \
+        (\$3 ~ /[0-9][0-9][0-9]/ || \$3 ~ /[0-9][0-9]/ || \$3 ~ /[0-9]/ || \$3 == \"\") && \
+        (split(\$3,control_array,\".\") <= 1 &&((\$3 >= 0 && \$3 <= 200) || \$3 == \"\"))) \
+        { \
+            n = split(\$2,control_array,\"-\"); \
+            if((control_array[2] >= \"01\"  && control_array[2] <= \"12\") && \
+            (control_array[1] >= \"0000\" && control_array[1] <= \"9999\")) \
+            { \
+                if ((control_array[2] == \"04\" || control_array[2] == \"06\" || control_array[2] == \"09\" || control_array[2] == \"11\") && 
+                (control_array[3] >= \"01\" && control_array[3] <= \"30\")) \
+                { \
+                    print; \
+                } \
+                else if(control_array[2] == \"02\") \
+                { \
+                    if (control_array[1] == \"2020\" && control_array[3] >= \"01\"  && control_array[3] <= \"29\") \
+                    { \
+                        print; \
+                    } \
+                    else if(control_array[3] >= \"01\"  && control_array[3] <= \"28\") \
+                    { \
+                        print; \
+                    } \
+                } \
+                else \
+                { \
+                    print; \
+                } \
+            } \
+        } \
+    }
+} \
+' \
+"
+
+#HLAVICKA = "echo "id,datum,vek,pohlavi,kraj_nuts_kod,okres_lau_kod,nakaza_v_zahranici,nakaza_zeme_csu_kod,reportovano_khs""
+
+if    [ "$COMMAND" = "infected" ];   then COMMAND_EXECUTE="$INFECTED";
+elif  [ "$COMMAND" = "gender" ];     then COMMAND_EXECUTE="$GENDER_COM";
+elif  [ "$COMMAND" = "age" ];        then COMMAND_EXECUTE="$AGE";
+elif  [ "$COMMAND" = "daily" ];      then COMMAND_EXECUTE="$DAILY";
+elif  [ "$COMMAND" = "monthly" ];    then COMMAND_EXECUTE="$MONTHLY";
+elif  [ "$COMMAND" = "yearly" ];     then COMMAND_EXECUTE="$YEARLY";
+elif  [ "$COMMAND" = "countries" ];  then COMMAND_EXECUTE="$COUNTRIES";
+elif  [ "$COMMAND" = "districts" ];  then COMMAND_EXECUTE="$DISTRICTS";
+elif  [ "$COMMAND" = "regions" ];    then COMMAND_EXECUTE="$REGIONS";
+fi
+
+
+if [ "$COMMAND" = "merge" ]
+then
+eval "$INPUT | $MERGE";
+else
+if [ -n "$COMMAND_EXECUTE" ]
+then
+    eval "$INPUT | $MERGE | $INVALID_DATE | $FILTERS | $COMMAND_EXECUTE | $HISTOGRAM";
+else
+    eval "$INPUT | $MERGE | $INVALID_DATE | $FILTERS";
+fi
+fi
+eval "$INPUT | $MERGE | $INVALID_DATE_OUTPUT";
+
