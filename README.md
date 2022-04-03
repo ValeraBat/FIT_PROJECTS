@@ -32,5 +32,11 @@ My university projects.
 1. Project 18/20 (2 points minus due to documentation ://////////////)
 2. Project ../20
 
+<<<<<<< HEAD
 #### IZU
 2. Homework ../5
+=======
+
+
+
+>>>>>>> 8fdcd808070774f5015f01354978b791e1bec7b6
